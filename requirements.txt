@@ -1,1 +1,6 @@
-
+yfinance>=0.2.52
+pandas>=2.2.2
+numpy>=1.26.4
+pandas_ta>=0.3.14b
+mplfinance>=0.12.10b0
+matplotlib>=3.8.4

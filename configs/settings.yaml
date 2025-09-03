@@ -1,1 +1,27 @@
+timezone: Europe/Berlin
+out_dir: reports/out
 
+timeframes:
+  resample_from: 15min    # Baseline: 15m
+  intraday: [ "1H", "4H" ]
+  daily: "1D"
+
+params:
+  ema_fast: 50
+  ema_slow: 200
+  rsi_len: 14
+  adx_len: 14
+  atr_len: 14
+  psar:
+    af: 0.02
+    max_af: 0.2
+
+rules:
+  adx_min: 20
+  ema50_slope_lookback: 5
+  pullback_atr_frac: 0.25
+  sl_atr_mult: 1.5
+  tp_atr_mult: 2.0
+
+report:
+  email: true   # per CLI-Flag überschreibbar

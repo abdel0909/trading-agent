@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from utils.helpers import load_yaml, now_tz
 from utils.logger import get_logger
-from utils.emailer import send_email
+from utils.emailer import send_email  # lädt .env bereits pfadsicher
 
 from analysis.data_loader import load_yf, resample_ohlc
 from analysis.indicators import add_indicators
@@ -16,31 +16,21 @@ from analysis.charting import plot_m15
 from analysis.regime import regime_signal as regime_signal_safe
 from strategies.wilder import WilderStrategy
 
-
-# ------------------------ .env robust laden + Debug -------------------------
-ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
-load_dotenv(dotenv_path=ENV_PATH)  # erzwingt konkreten Pfad
-print(f"[env] using: {ENV_PATH}")
-for _k in ("EMAIL_TO", "SMTP_USER", "SMTP_HOST", "SMTP_PORT", "TZ"):
-    _v = os.getenv(_k)
-    print(f"[env] {_k} = {(_v if _k != 'SMTP_PASS' else '****') if _v else None}")
-# ---------------------------------------------------------------------------
-
+# --- .env zusätzlich hier (falls Agent solo läuft) ---
+ENV_PATH = "/workspaces/trading-agent/.env"
+load_dotenv(dotenv_path=ENV_PATH)
+print(f"[agent] .env geladen von: {ENV_PATH}")
 
 def _tz_safe(dt, tz: str):
-    """Falls Index tz-naiv ist: als UTC interpretieren und in Ziel-TZ konvertieren."""
     if getattr(dt, "tzinfo", None) is None:
         dt = dt.replace(tzinfo=ZoneInfo("UTC"))
     return dt.astimezone(ZoneInfo(tz))
 
-
 def _fmt_info(symbol: str, msg: str) -> dict:
     return {"symbol": symbol, "html": f"<h2>{symbol}</h2><p><b>Info:</b> {msg}</p>", "chart_path": None}
 
-
 def _fmt_error(symbol: str, msg: str) -> dict:
     return {"symbol": symbol, "html": f"<h2>{symbol}</h2><p><b>Fehler:</b> {msg}</p>", "chart_path": None}
-
 
 def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, trade: dict) -> str:
     return f"""
@@ -60,16 +50,15 @@ def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, t
     <p><small>SL/TP ATR-basiert (ATR14, M15). Früher Exit bei PSAR-Flip oder RSI-50 Gegensignal.</small></p>
     """
 
-
 def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
     p = cfg["params"]; out_dir = cfg["out_dir"]
 
-    # ---- 15m laden
+    # 15m laden
     df15 = load_yf(symbol, interval="15m", period="60d")
     if df15 is None or df15.empty:
         return _fmt_error(symbol, "Keine 15m-Daten geladen (yfinance leer).")
 
-    # ---- Indikatoren 15m
+    # 15m Indikatoren
     df15 = add_indicators(
         df15,
         ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
@@ -77,9 +66,9 @@ def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]
     ).dropna()
     if df15.empty:
-        return _fmt_info(symbol, "Indikatoren auf M15 noch unvollständig (NaN) – später erneut versuchen.")
+        return _fmt_info(symbol, "Indikatoren M15 unvollständig – später erneut versuchen.")
 
-    # ---- H1/H4 aus 15m
+    # H1/H4 aus 15m
     h1 = resample_ohlc(df15, "1H")
     h4 = resample_ohlc(df15, "4H")
     h1 = add_indicators(h1, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
@@ -91,7 +80,7 @@ def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
     if h1.empty or h4.empty:
         return _fmt_info(symbol, "H1/H4-Indikatoren unvollständig – später erneut versuchen.")
 
-    # ---- D1 separat
+    # D1 separat
     d1 = load_yf(symbol, interval="1d", period="6mo")
     if d1 is None or d1.empty:
         return _fmt_error(symbol, "Keine D1-Daten geladen.")
@@ -101,24 +90,23 @@ def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
     if d1.empty:
         return _fmt_info(symbol, "D1-Indikatoren unvollständig – später erneut versuchen.")
 
-    # ---- Regime + Signal
-    strat = WilderStrategy(cfg)
+    # Regime + Signal
+    strat  = WilderStrategy(cfg)
     regime = regime_signal_safe(d1, h4, h1)
     trade  = strat.signal(df15, regime["bias"])
 
-    # ---- Chart
+    # Chart
     try:
         chart_path = plot_m15(df15, symbol, tz, out_dir=out_dir)
     except Exception as e:
         logger.warning("Charting-Fehler %s: %s", symbol, e)
         chart_path = None
 
-    # ---- Report
+    # Report
     last_close = float(df15["Close"].iloc[-1])
     last_dt    = _tz_safe(df15.index[-1], tz)
     html = build_html(symbol, tz, last_close, last_dt, regime, trade)
     return {"symbol": symbol, "html": html, "chart_path": chart_path}
-
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -129,11 +117,10 @@ def parse_args():
     ap.add_argument("--symbols_cfg", type=str, default="configs/symbols.yaml")
     return ap.parse_args()
 
-
 def main():
     logger = get_logger()
-
     args = parse_args()
+
     cfg = load_yaml(args.settings)
     tz  = args.tz or cfg.get("timezone") or os.getenv("TZ", "Europe/Berlin")
 
@@ -156,20 +143,19 @@ def main():
             all_html.append(f"<h2>{s}</h2><pre>{traceback.format_exc()}</pre>")
 
     subject = f"KI Marktanalyse ({', '.join(symbols)}) – {now_tz(tz).strftime('%Y-%m-%d %H:%M')}"
-    body = "<hr>".join(all_html)
+    body    = "<hr>".join(all_html)
 
     send_flag = args.email or bool(cfg.get("report", {}).get("email", False))
     if send_flag:
-        try:
-            send_email(subject, body, attachments)
-        except Exception:
-            logger.error("E-Mail-Versand fehlgeschlagen:\n%s", traceback.format_exc())
+        ok = send_email(subject, body, attachments)
+        if not ok:
+            print("[agent] Versand fehlgeschlagen – Report nur in Konsole ausgegeben.")
+            print(subject); print("=" * 80); print(textwrap.fill(body, 120))
     else:
         print(subject)
         print("=" * 80)
         print(textwrap.fill(body, 120))
         print("\nCharts:", attachments)
-
 
 if __name__ == "__main__":
     main()

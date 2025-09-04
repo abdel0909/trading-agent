@@ -33,9 +33,9 @@ print("[emailer] load_dotenv(...) ->", loaded)
 
 def _cfg() -> dict:
     return {
-        "EMAIL_TO":  os.getenv("EMAIL_TO"),
-        "SMTP_USER": os.getenv("SMTP_USER"),
-        "SMTP_PASS": os.getenv("SMTP_PASS"),
+        "EMAIL_TO":  os.getenv("bouardjaa@gmail.com"),
+        "SMTP_USER": os.getenv("bouardjaa@gmail.com"),
+        "SMTP_PASS": os.getenv("zwqdwuyxdzydtaqu"),
         "SMTP_HOST": os.getenv("SMTP_HOST", "smtp.gmail.com"),
         "SMTP_PORT": int(os.getenv("SMTP_PORT", "587")),
     }

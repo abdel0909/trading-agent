@@ -13,9 +13,21 @@ from utils.emailer import send_email
 from analysis.data_loader import load_yf, resample_ohlc
 from analysis.indicators import add_indicators
 from analysis.charting import plot_m15
-from analysis.regime import regime_signal as regime_signal_safe   # <- sichere Version
+from analysis.regime import regime_signal as regime_signal_safe
 from strategies.wilder import WilderStrategy
 
+
+def _fmt_info(symbol: str, msg: str) -> dict:
+    return {"symbol": symbol, "html": f"<h2>{symbol}</h2><p><b>Info:</b> {msg}</p>", "chart_path": None}
+
+def _fmt_error(symbol: str, msg: str) -> dict:
+    return {"symbol": symbol, "html": f"<h2>{symbol}</h2><p><b>Fehler:</b> {msg}</p>", "chart_path": None}
+
+def _tz_safe(dt, tz: str):
+    # yfinance-Index kann tz-naiv sein → als UTC interpretieren und in gewünschte TZ konvertieren
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(ZoneInfo(tz))
 
 def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, trade: dict) -> str:
     return f"""
@@ -39,16 +51,22 @@ def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, t
 def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
     p = cfg["params"]; out_dir = cfg["out_dir"]
 
-    # 15m laden + Indikatoren
+    # ---- 15m laden
     df15 = load_yf(symbol, interval="15m", period="60d")
+    if df15 is None or df15.empty:
+        return _fmt_error(symbol, "Keine 15m-Daten geladen (yfinance leer).")
+
+    # ---- Indikatoren 15m
     df15 = add_indicators(
         df15,
         ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
         rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]
     ).dropna()
+    if df15.empty:
+        return _fmt_info(symbol, "Indikatoren auf M15 noch unvollständig (NaN) – später erneut versuchen.")
 
-    # H1/H4 aus 15m
+    # ---- H1/H4 aus 15m
     h1 = resample_ohlc(df15, "1H")
     h4 = resample_ohlc(df15, "4H")
     h1 = add_indicators(h1, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
@@ -57,23 +75,34 @@ def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
     h4 = add_indicators(h4, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
                         rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
                         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]).dropna()
+    if h1.empty or h4.empty:
+        return _fmt_info(symbol, "H1/H4-Indikatoren unvollständig – später erneut versuchen.")
 
-    # D1 separat
+    # ---- D1 separat
     d1 = load_yf(symbol, interval="1d", period="6mo")
+    if d1 is None or d1.empty:
+        return _fmt_error(symbol, "Keine D1-Daten geladen.")
     d1 = add_indicators(d1, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
                         rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
                         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]).dropna()
+    if d1.empty:
+        return _fmt_info(symbol, "D1-Indikatoren unvollständig – später erneut versuchen.")
 
-    # Regime (sicher) + Signal
+    # ---- Regime + Signal
+    strat = WilderStrategy(cfg)
     regime = regime_signal_safe(d1, h4, h1)
-    strat  = WilderStrategy(cfg)
     trade  = strat.signal(df15, regime["bias"])
 
-    # Chart
-    chart_path = plot_m15(df15, symbol, tz, out_dir=out_dir)
+    # ---- Chart
+    try:
+        chart_path = plot_m15(df15, symbol, tz, out_dir=out_dir)
+    except Exception as e:
+        logger.warning("Charting-Fehler %s: %s", symbol, e)
+        chart_path = None
 
+    # ---- Report
     last_close = float(df15["Close"].iloc[-1])
-    last_dt    = df15.index[-1].astimezone(ZoneInfo(tz))
+    last_dt    = _tz_safe(df15.index[-1], tz)
     html = build_html(symbol, tz, last_close, last_dt, regime, trade)
     return {"symbol": symbol, "html": html, "chart_path": chart_path}
 
@@ -96,6 +125,7 @@ def main():
     cfg = load_yaml(args.settings)
     tz  = args.tz or cfg.get("timezone") or os.environ.get("TZ", "Europe/Berlin")
 
+    # Symbole
     if args.symbols:
         symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     else:
@@ -107,7 +137,8 @@ def main():
         try:
             res = analyze_symbol(s, tz, cfg, logger)
             all_html.append(res["html"])
-            attachments.append(res["chart_path"])
+            if res["chart_path"]:
+                attachments.append(res["chart_path"])
         except Exception:
             logger.error("Analyse-Fehler für %s\n%s", s, traceback.format_exc())
             all_html.append(f"<h2>{s}</h2><pre>{traceback.format_exc()}</pre>")

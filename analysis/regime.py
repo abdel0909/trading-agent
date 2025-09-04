@@ -2,10 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
-import argparse
-import traceback
-import textwrap
+import os, argparse, traceback, textwrap
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
@@ -16,7 +13,7 @@ from utils.emailer import send_email
 from analysis.data_loader import load_yf, resample_ohlc
 from analysis.indicators import add_indicators
 from analysis.charting import plot_m15
-from analysis.regime import regime_signal as regime_signal_safe  # <- sichere Version nutzen
+from analysis.regime import regime_signal as regime_signal_safe   # <- sichere Version
 from strategies.wilder import WilderStrategy
 
 
@@ -40,9 +37,9 @@ def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, t
 
 
 def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
-    p = cfg["params"]; r = cfg["rules"]; out_dir = cfg["out_dir"]
+    p = cfg["params"]; out_dir = cfg["out_dir"]
 
-    # ---- Daten laden (15m Basis) + Indikatoren
+    # 15m laden + Indikatoren
     df15 = load_yf(symbol, interval="15m", period="60d")
     df15 = add_indicators(
         df15,
@@ -51,7 +48,7 @@ def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]
     ).dropna()
 
-    # ---- H1/H4 aus 15m resamplen + Indikatoren
+    # H1/H4 aus 15m
     h1 = resample_ohlc(df15, "1H")
     h4 = resample_ohlc(df15, "4H")
     h1 = add_indicators(h1, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
@@ -61,24 +58,24 @@ def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
                         rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
                         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]).dropna()
 
-    # ---- D1 separat laden + Indikatoren
+    # D1 separat
     d1 = load_yf(symbol, interval="1d", period="6mo")
     d1 = add_indicators(d1, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
                         rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
                         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]).dropna()
 
-    # ---- Regime (sichere Version) + Signal (Wilder-Strategie)
-    strat = WilderStrategy(cfg)
+    # Regime (sicher) + Signal
     regime = regime_signal_safe(d1, h4, h1)
+    strat  = WilderStrategy(cfg)
     trade  = strat.signal(df15, regime["bias"])
 
-    # ---- Chart
-    chart  = plot_m15(df15, symbol, tz, out_dir=out_dir)
+    # Chart
+    chart_path = plot_m15(df15, symbol, tz, out_dir=out_dir)
 
     last_close = float(df15["Close"].iloc[-1])
     last_dt    = df15.index[-1].astimezone(ZoneInfo(tz))
     html = build_html(symbol, tz, last_close, last_dt, regime, trade)
-    return {"symbol": symbol, "html": html, "chart_path": chart}
+    return {"symbol": symbol, "html": html, "chart_path": chart_path}
 
 
 def parse_args():
@@ -99,7 +96,6 @@ def main():
     cfg = load_yaml(args.settings)
     tz  = args.tz or cfg.get("timezone") or os.environ.get("TZ", "Europe/Berlin")
 
-    # Symbolliste
     if args.symbols:
         symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     else:

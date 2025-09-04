@@ -8,29 +8,40 @@ from dotenv import load_dotenv
 
 from utils.helpers import load_yaml, now_tz
 from utils.logger import get_logger
-from utils.emailer import send_email  # lädt .env bereits pfadsicher
+from utils.emailer import send_email  # nutzt bereits os.getenv (Secrets/.env)
 
+# --- NEU: .env als Fallback laden (lokal); in Codespaces kommen die Secrets als Env-Variablen
+BASE_DIR = os.path.dirname(__file__)
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+if os.path.exists(ENV_PATH):
+    load_dotenv(ENV_PATH)
+
+def _env_snapshot() -> str:
+    """Maskierter Überblick über die Mail-Umgebung (aus Secrets/.env)."""
+    u = os.getenv("bouardjaa@gmail.com")
+    t = os.getenv("bouardjaa@gmail.com")
+    h = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    p = os.getenv("SMTP_PORT", "587")
+    pw = os.getenv("zwqdwuyxdzydtaqu")
+    pw_mask = "gesetzt" if pw else "NICHT gesetzt"
+    lines = [
+        "[emailier] Konfiguration geladen:",
+        f"  EMAIL_TO   = {t}",
+        f"  SMTP_USER  = {u}",
+        f"  SMTP_PASS? = {pw_mask}",
+        f"  SMTP_HOST  = {h}",
+        f"  SMTP_PORT  = {p}",
+        "",
+    ]
+    return "\n".join(lines)
+
+# --------------------------------------------------------------------
+# ab hier dein bestehender Analyse-/Reporting-Code
 from analysis.data_loader import load_yf, resample_ohlc
 from analysis.indicators import add_indicators
 from analysis.charting import plot_m15
 from analysis.regime import regime_signal as regime_signal_safe
 from strategies.wilder import WilderStrategy
-
-# --- .env zusätzlich hier (falls Agent solo läuft) ---
-ENV_PATH = "/workspaces/trading-agent/.env"
-load_dotenv(dotenv_path=ENV_PATH)
-print(f"[agent] .env geladen von: {ENV_PATH}")
-
-def _tz_safe(dt, tz: str):
-    if getattr(dt, "tzinfo", None) is None:
-        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-    return dt.astimezone(ZoneInfo(tz))
-
-def _fmt_info(symbol: str, msg: str) -> dict:
-    return {"symbol": symbol, "html": f"<h2>{symbol}</h2><p><b>Info:</b> {msg}</p>", "chart_path": None}
-
-def _fmt_error(symbol: str, msg: str) -> dict:
-    return {"symbol": symbol, "html": f"<h2>{symbol}</h2><p><b>Fehler:</b> {msg}</p>", "chart_path": None}
 
 def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, trade: dict) -> str:
     return f"""
@@ -53,58 +64,40 @@ def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, t
 def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
     p = cfg["params"]; out_dir = cfg["out_dir"]
 
-    # 15m laden
     df15 = load_yf(symbol, interval="15m", period="60d")
-    if df15 is None or df15.empty:
-        return _fmt_error(symbol, "Keine 15m-Daten geladen (yfinance leer).")
-
-    # 15m Indikatoren
     df15 = add_indicators(
         df15,
         ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
         rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]
     ).dropna()
-    if df15.empty:
-        return _fmt_info(symbol, "Indikatoren M15 unvollständig – später erneut versuchen.")
 
-    # H1/H4 aus 15m
-    h1 = resample_ohlc(df15, "1H")
-    h4 = resample_ohlc(df15, "4H")
-    h1 = add_indicators(h1, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
-                        rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
-                        psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]).dropna()
-    h4 = add_indicators(h4, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
-                        rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
-                        psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]).dropna()
-    if h1.empty or h4.empty:
-        return _fmt_info(symbol, "H1/H4-Indikatoren unvollständig – später erneut versuchen.")
+    h1 = add_indicators(resample_ohlc(df15, "1H"), **{
+        "ema_fast": p["ema_fast"], "ema_slow": p["ema_slow"],
+        "rsi_len": p["rsi_len"], "adx_len": p["adx_len"], "atr_len": p["atr_len"],
+        "psar_af": p["psar"]["af"], "psar_max_af": p["psar"]["max_af"]
+    }).dropna()
 
-    # D1 separat
-    d1 = load_yf(symbol, interval="1d", period="6mo")
-    if d1 is None or d1.empty:
-        return _fmt_error(symbol, "Keine D1-Daten geladen.")
-    d1 = add_indicators(d1, ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
-                        rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
-                        psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]).dropna()
-    if d1.empty:
-        return _fmt_info(symbol, "D1-Indikatoren unvollständig – später erneut versuchen.")
+    h4 = add_indicators(resample_ohlc(df15, "4H"), **{
+        "ema_fast": p["ema_fast"], "ema_slow": p["ema_slow"],
+        "rsi_len": p["rsi_len"], "adx_len": p["adx_len"], "atr_len": p["atr_len"],
+        "psar_af": p["psar"]["af"], "psar_max_af": p["psar"]["max_af"]
+    }).dropna()
 
-    # Regime + Signal
-    strat  = WilderStrategy(cfg)
+    d1 = add_indicators(load_yf(symbol, interval="1d", period="6mo"), **{
+        "ema_fast": p["ema_fast"], "ema_slow": p["ema_slow"],
+        "rsi_len": p["rsi_len"], "adx_len": p["adx_len"], "atr_len": p["atr_len"],
+        "psar_af": p["psar"]["af"], "psar_max_af": p["psar"]["max_af"]
+    }).dropna()
+
     regime = regime_signal_safe(d1, h4, h1)
+    strat  = WilderStrategy(cfg)
     trade  = strat.signal(df15, regime["bias"])
 
-    # Chart
-    try:
-        chart_path = plot_m15(df15, symbol, tz, out_dir=out_dir)
-    except Exception as e:
-        logger.warning("Charting-Fehler %s: %s", symbol, e)
-        chart_path = None
+    chart_path = plot_m15(df15, symbol, tz, out_dir=out_dir)
 
-    # Report
     last_close = float(df15["Close"].iloc[-1])
-    last_dt    = _tz_safe(df15.index[-1], tz)
+    last_dt    = df15.index[-1].astimezone(ZoneInfo(tz))
     html = build_html(symbol, tz, last_close, last_dt, regime, trade)
     return {"symbol": symbol, "html": html, "chart_path": chart_path}
 
@@ -113,18 +106,35 @@ def parse_args():
     ap.add_argument("--symbols", type=str, default="", help="Kommagetrennt; leer => configs/symbols.yaml")
     ap.add_argument("--tz", type=str, default="", help="override Zeitzone")
     ap.add_argument("--email", action="store_true", help="Bericht per E-Mail senden")
+    # optionale CLI-Overrides, falls du .env/Secrets umgehen willst:
+    ap.add_argument("--smtp-user", type=str, default=None)
+    ap.add_argument("--smtp-pass", type=str, default=None)
+    ap.add_argument("--smtp-to",   type=str, default=None)
+    ap.add_argument("--smtp-host", type=str, default=None)
+    ap.add_argument("--smtp-port", type=str, default=None)
     ap.add_argument("--settings", type=str, default="configs/settings.yaml")
     ap.add_argument("--symbols_cfg", type=str, default="configs/symbols.yaml")
     return ap.parse_args()
 
+def _apply_cli_overrides(args):
+    """CLI > Env: erlaubt Test ohne .env/Secrets."""
+    if args.smtp_user: os.environ["SMTP_USER"] = args.smtp_user
+    if args.smtp_pass: os.environ["SMTP_PASS"] = args.smtp_pass
+    if args.smtp_to:   os.environ["EMAIL_TO"]  = args.smtp_to
+    if args.smtp_host: os.environ["SMTP_HOST"] = args.smtp_host
+    if args.smtp_port: os.environ["SMTP_PORT"] = str(args.smtp_port)
+
 def main():
     logger = get_logger()
     args = parse_args()
+    _apply_cli_overrides(args)
+
+    # Sichtbarer Env-Snapshot (maskiert)
+    print(_env_snapshot())
 
     cfg = load_yaml(args.settings)
-    tz  = args.tz or cfg.get("timezone") or os.getenv("TZ", "Europe/Berlin")
+    tz  = args.tz or cfg.get("timezone") or os.environ.get("TZ", "Europe/Berlin")
 
-    # Symbolliste
     if args.symbols:
         symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     else:
@@ -136,22 +146,22 @@ def main():
         try:
             res = analyze_symbol(s, tz, cfg, logger)
             all_html.append(res["html"])
-            if res["chart_path"]:
-                attachments.append(res["chart_path"])
+            attachments.append(res["chart_path"])
         except Exception:
-            logger.error("Analyse-Fehler für %s\n%s", s, traceback.format_exc())
             all_html.append(f"<h2>{s}</h2><pre>{traceback.format_exc()}</pre>")
 
     subject = f"KI Marktanalyse ({', '.join(symbols)}) – {now_tz(tz).strftime('%Y-%m-%d %H:%M')}"
-    body    = "<hr>".join(all_html)
+    body = "<hr>".join(all_html)
 
     send_flag = args.email or bool(cfg.get("report", {}).get("email", False))
     if send_flag:
-        ok = send_email(subject, body, attachments)
-        if not ok:
+        try:
+            send_email(subject, body, attachments)
+        except Exception:
             print("[agent] Versand fehlgeschlagen – Report nur in Konsole ausgegeben.")
-            print(subject); print("=" * 80); print(textwrap.fill(body, 120))
-    else:
+            send_flag = False
+
+    if not send_flag:
         print(subject)
         print("=" * 80)
         print(textwrap.fill(body, 120))

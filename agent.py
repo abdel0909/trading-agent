@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# --- .env robust laden ( immer relativ zu agent.py ) ---
-from dotenv import load_dotenv
-import os
-ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
-load_dotenv(dotenv_path=ENV_PATH)  # <-- erzwingt den Pfad
 from __future__ import annotations
-print(f"[env] using: {ENV_PATH}")
-for k in ("EMAIL_TO", "SMTP_USER", "SMTP_HOST", "SMTP_PORT", "TZ"):
-    v = os.getenv(k)
-    print(f"[env] {k} = {v if k!='SMTP_PASS' else ('***' if v else None)}")
 
 import os, argparse, traceback, textwrap
 from zoneinfo import ZoneInfo
@@ -26,17 +17,30 @@ from analysis.regime import regime_signal as regime_signal_safe
 from strategies.wilder import WilderStrategy
 
 
+# ------------------------ .env robust laden + Debug -------------------------
+ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path=ENV_PATH)  # erzwingt konkreten Pfad
+print(f"[env] using: {ENV_PATH}")
+for _k in ("EMAIL_TO", "SMTP_USER", "SMTP_HOST", "SMTP_PORT", "TZ"):
+    _v = os.getenv(_k)
+    print(f"[env] {_k} = {(_v if _k != 'SMTP_PASS' else '****') if _v else None}")
+# ---------------------------------------------------------------------------
+
+
+def _tz_safe(dt, tz: str):
+    """Falls Index tz-naiv ist: als UTC interpretieren und in Ziel-TZ konvertieren."""
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(ZoneInfo(tz))
+
+
 def _fmt_info(symbol: str, msg: str) -> dict:
     return {"symbol": symbol, "html": f"<h2>{symbol}</h2><p><b>Info:</b> {msg}</p>", "chart_path": None}
+
 
 def _fmt_error(symbol: str, msg: str) -> dict:
     return {"symbol": symbol, "html": f"<h2>{symbol}</h2><p><b>Fehler:</b> {msg}</p>", "chart_path": None}
 
-def _tz_safe(dt, tz: str):
-    # yfinance-Index kann tz-naiv sein → als UTC interpretieren und in gewünschte TZ konvertieren
-    if getattr(dt, "tzinfo", None) is None:
-        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-    return dt.astimezone(ZoneInfo(tz))
 
 def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, trade: dict) -> str:
     return f"""
@@ -127,14 +131,13 @@ def parse_args():
 
 
 def main():
-    load_dotenv()
     logger = get_logger()
 
     args = parse_args()
     cfg = load_yaml(args.settings)
-    tz  = args.tz or cfg.get("timezone") or os.environ.get("TZ", "Europe/Berlin")
+    tz  = args.tz or cfg.get("timezone") or os.getenv("TZ", "Europe/Berlin")
 
-    # Symbole
+    # Symbolliste
     if args.symbols:
         symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     else:
@@ -157,7 +160,10 @@ def main():
 
     send_flag = args.email or bool(cfg.get("report", {}).get("email", False))
     if send_flag:
-        send_email(subject, body, attachments)
+        try:
+            send_email(subject, body, attachments)
+        except Exception:
+            logger.error("E-Mail-Versand fehlgeschlagen:\n%s", traceback.format_exc())
     else:
         print(subject)
         print("=" * 80)

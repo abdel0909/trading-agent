@@ -10,42 +10,47 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email import encoders
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 # ------------------------------------------------------------
-# .env robust laden (unabhängig vom Startpfad / Codespace-Namen)
+# .env ROBUST LADEN (unabhängig vom Startpfad/Codespace-Namen)
 # ------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV_PATH = os.path.join(BASE_DIR, ".env")
+THIS_FILE = os.path.abspath(__file__)
+BASE_DIR  = os.path.dirname(os.path.dirname(THIS_FILE))      # Projekt-Root
+ENV_PATH  = os.path.join(BASE_DIR, ".env")
 
-print(f"[emailer] Lade .env von: {ENV_PATH}")
-# 1) Versuche .env im Projektroot
-loaded = load_dotenv(dotenv_path=ENV_PATH)
-# 2) Fallback: Standard-Suchpfad (falls lokal anderer Aufbau)
-if not loaded:
-    loaded = load_dotenv()
-    print(f"[emailer] Fallback load_dotenv() verwendet: {loaded}")
+print("[emailer] BASE_DIR =", BASE_DIR)
+print("[emailer] ENV_PATH =", ENV_PATH)
+print("[emailer] .env existiert? ->", os.path.exists(ENV_PATH))
 
-def _env() -> dict:
+# Inhalt einmal „roh“ lesen (zeigt Keys; hilft bei Formatfehlern)
+parsed = dotenv_values(ENV_PATH) if os.path.exists(ENV_PATH) else {}
+print("[emailer] dotenv_values(.env) ->", parsed if parsed else "<leer/fehlt>")
+
+# Laden mit Override (setzt os.environ)
+loaded = load_dotenv(dotenv_path=ENV_PATH, override=True, verbose=False)
+print("[emailer] load_dotenv(...) ->", loaded)
+
+def _cfg() -> dict:
     return {
-        "EMAIL_TO":  os.getenv("bouardjaa@gmail.com"),
-        "SMTP_USER": os.getenv("bouardjaa@gmail.com"),
-        "SMTP_PASS": os.getenv("zwqdwuyxdzydtaqu"),
+        "EMAIL_TO":  os.getenv("EMAIL_TO"),
+        "SMTP_USER": os.getenv("SMTP_USER"),
+        "SMTP_PASS": os.getenv("SMTP_PASS"),
         "SMTP_HOST": os.getenv("SMTP_HOST", "smtp.gmail.com"),
         "SMTP_PORT": int(os.getenv("SMTP_PORT", "587")),
     }
 
-# Debug-Ausgabe beim Import
-_cfg = _env()
-print("[emailer] Konfiguration:")
-print(f"  EMAIL_TO  = {_cfg['EMAIL_TO']}")
-print(f"  SMTP_USER = {_cfg['SMTP_USER']}")
-print(f"  SMTP_PASS gesetzt? {'JA' if _cfg['SMTP_PASS'] else 'NEIN'}")
-print(f"  SMTP_HOST = {_cfg['SMTP_HOST']}")
-print(f"  SMTP_PORT = {_cfg['SMTP_PORT']}")
+# Direkt nach dem Laden zustand loggen
+_cfg0 = _cfg()
+print("[emailer] Geladene Konfiguration:")
+print("  EMAIL_TO  =", _cfg0["EMAIL_TO"])
+print("  SMTP_USER =", _cfg0["SMTP_USER"])
+print("  SMTP_PASS =", "***gesetzt***" if _cfg0["SMTP_PASS"] else "FEHLT")
+print("  SMTP_HOST =", _cfg0["SMTP_HOST"])
+print("  SMTP_PORT =", _cfg0["SMTP_PORT"])
 
 # ------------------------------------------------------------
-# Attachments anhängen (optional)
+# Anhänge hinzufügen
 # ------------------------------------------------------------
 def _attach_files(msg: MIMEMultipart, attachments: Optional[List[str]]) -> None:
     if not attachments:
@@ -54,13 +59,13 @@ def _attach_files(msg: MIMEMultipart, attachments: Optional[List[str]]) -> None:
         if not path or not os.path.isfile(path):
             print(f"[emailer] Anhang übersprungen (nicht gefunden): {path}")
             continue
-        ctype, encoding = mimetypes.guess_type(path)
-        if ctype is None or encoding is not None:
+        ctype, enc = mimetypes.guess_type(path)
+        if ctype is None or enc is not None:
             ctype = "application/octet-stream"
-        maintype, subtype = ctype.split("/", 1)
-        with open(path, "rb") as fh:
-            part = MIMEBase(maintype, subtype)
-            part.set_payload(fh.read())
+        mt, st = ctype.split("/", 1)
+        with open(path, "rb") as f:
+            part = MIMEBase(mt, st)
+            part.set_payload(f.read())
             encoders.encode_base64(part)
         part.add_header("Content-Disposition", "attachment", filename=os.path.basename(path))
         msg.attach(part)
@@ -69,15 +74,12 @@ def _attach_files(msg: MIMEMultipart, attachments: Optional[List[str]]) -> None:
 # Mail senden
 # ------------------------------------------------------------
 def send_email(subject: str, body_html: str, attachments: Optional[List[str]] = None) -> bool:
-    cfg = _env()
-
-    # Plausibilitätscheck – klare Meldung, falls etwas fehlt
+    cfg = _cfg()
     missing = [k for k in ("EMAIL_TO", "SMTP_USER", "SMTP_PASS") if not cfg.get(k)]
     if missing:
         print(f"[mailer] Email nicht konfiguriert (fehlt: {', '.join(missing)}) – Überspringe Versand.")
         return False
 
-    # Nachricht bauen
     msg = MIMEMultipart()
     msg["From"] = cfg["SMTP_USER"]
     msg["To"] = cfg["EMAIL_TO"]
@@ -85,28 +87,27 @@ def send_email(subject: str, body_html: str, attachments: Optional[List[str]] = 
     msg.attach(MIMEText(body_html, "html"))
     _attach_files(msg, attachments)
 
-    # Versand
     try:
         print(f"[mailer] Verbinde zu {cfg['SMTP_HOST']}:{cfg['SMTP_PORT']} …")
-        with smtplib.SMTP(cfg["SMTP_HOST"], cfg["SMTP_PORT"], timeout=30) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
+        with smtplib.SMTP(cfg["SMTP_HOST"], cfg["SMTP_PORT"], timeout=30) as s:
+            s.ehlo()
+            s.starttls()
+            s.ehlo()
             print(f"[mailer] Login als {cfg['SMTP_USER']} …")
-            server.login(cfg["SMTP_USER"], cfg["SMTP_PASS"])
-            server.send_message(msg)
+            s.login(cfg["SMTP_USER"], cfg["SMTP_PASS"])
+            s.send_message(msg)
         print(f"[mailer] Mail erfolgreich an {cfg['EMAIL_TO']} gesendet.")
         return True
 
     except smtplib.SMTPAuthenticationError as e:
         print("[mailer] SMTPAuthenticationError – Login abgelehnt.")
-        print("         Prüfe: Gmail **App-Passwort (16-stellig)**, richtige Adresse,"
-              " 2FA aktiv, Wert ohne Leerzeichen/Anführungszeichen.")
-        print(f"         Details: {e}")
+        print("         Prüfe: 16-stelliges Gmail-App-Passwort, richtige Adresse, 2FA aktiv, keine Sonderzeichen/Leerzeichen.")
+        print("         Details:", e)
         return False
     except smtplib.SMTPException as e:
-        print(f"[mailer] SMTP Fehler: {e}")
+        print("[mailer] SMTP Fehler:", e)
         return False
     except Exception as e:
-        print(f"[mailer] Unerwarteter Fehler: {e}")
+        print("[mailer] Unerwarteter Fehler:", e)
         return False
+        

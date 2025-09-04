@@ -125,40 +125,6 @@ def ema_slope(series: pd.Series, lookback: int = 5) -> float:
 # -----------------------
 # Regime- & Signal-Logik
 # -----------------------
-def regime_signal(d1: pd.DataFrame, h4: pd.DataFrame, h1: pd.DataFrame) -> dict:
-    """
-    Liefert 'bias' in {"UP","DOWN","NEUTRAL"} + Begründung.
-    Regeln:
-      - H4: ADX>20 & +DI>-DI => aufwärts; umgekehrt abwärts
-      - D1: Close vs EMA200 (oberhalb = bullisch, unterhalb = bärisch)
-      - H1: Close > EMA50 und EMA50-Steigung > 0 (bullisch), spiegelbildlich bärisch
-    Bias wenn alle drei übereinstimmen, sonst NEUTRAL.
-    """
-    def last(d, col): return d[col].iloc[-1]
-
-    # H4
-    h4_up   = (last(h4, "ADX") > 20) and (last(h4, "+DI") > last(h4, "-DI"))
-    h4_down = (last(h4, "ADX") > 20) and (last(h4, "-DI") > last(h4, "+DI"))
-
-    # D1
-    d1_up   = last(d1, "Close") > last(d1, "EMA200")
-    d1_down = last(d1, "Close") < last(d1, "EMA200")
-
-    # H1
-    ema50_slope = ema_slope(h1["EMA50"], lookback=5)
-    h1_up   = (last(h1, "Close") > last(h1, "EMA50")) and (ema50_slope > 0)
-    h1_down = (last(h1, "Close") < last(h1, "EMA50")) and (ema50_slope < 0)
-
-    reasons = []
-    bias = "NEUTRAL"
-    if h4_up and d1_up and h1_up: 
-        bias = "UP"; reasons.append("H4 ADX/+DI bullisch, D1 über EMA200, H1 über EMA50 mit positiver Steigung")
-    elif h4_down and d1_down and h1_down:
-        bias = "DOWN"; reasons.append("H4 ADX/-DI bärisch, D1 unter EMA200, H1 unter EMA50 mit negativer Steigung")
-    else:
-        reasons.append(f"Mischlage (H4_up={h4_up}, D1_up={d1_up}, H1_up={h1_up})")
-
-    return {"bias": bias, "reasons": reasons}
 
 def entry_exit_on_m15(m15: pd.DataFrame, bias: str) -> dict:
     """

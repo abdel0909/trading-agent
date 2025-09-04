@@ -31,8 +31,8 @@ def _cfg() -> dict:
     email_to = os.getenv("EMAIL_TO") or os.getenv("SMTP_USER")
     return {
         "EMAIL_TO":  email_to,
-        "SMTP_USER": os.getenv("SMTP_USER"),
-        "SMTP_PASS": os.getenv("SMTP_PASS"),
+        "SMTP_USER": os.getenv("bouardjaa@gmail.com"),
+        "SMTP_PASS": os.getenv("zwqdwuyxdzydtaqu"),
         "SMTP_HOST": host,
         "SMTP_PORT": int(os.getenv("SMTP_PORT", "587")),
     }

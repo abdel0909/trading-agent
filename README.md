@@ -10,4 +10,5 @@
 ```bash
 pip install -r requirements.txt
 cp .env.example .env  # Werte setzen
+pip install python-dotenv
 python agent.py --email

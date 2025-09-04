@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# --- .env robust laden ( immer relativ zu agent.py ) ---
+from dotenv import load_dotenv
+import os
+ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path=ENV_PATH)  # <-- erzwingt den Pfad
 from __future__ import annotations
+print(f"[env] using: {ENV_PATH}")
+for k in ("EMAIL_TO", "SMTP_USER", "SMTP_HOST", "SMTP_PORT", "TZ"):
+    v = os.getenv(k)
+    print(f"[env] {k} = {v if k!='SMTP_PASS' else ('***' if v else None)}")
 
 import os, argparse, traceback, textwrap
 from zoneinfo import ZoneInfo

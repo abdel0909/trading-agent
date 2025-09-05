@@ -1,4 +1,4 @@
-name: Market Analysis 15m
+name: Market Analysis (Agent ONLY)
 
 on:
   workflow_dispatch:
@@ -11,11 +11,6 @@ on:
         description: "Zeitzone (IANA, z.B. Europe/Berlin)"
         required: false
         default: "Europe/Berlin"
-      send_testmail:
-        description: "Nur Debug: zusätzliche Testmail ohne Analyse senden?"
-        type: boolean
-        required: false
-        default: false
   schedule:
     - cron: "*/15 * * * *"
 
@@ -34,6 +29,7 @@ jobs:
 
       - name: Install deps
         run: |
+          set -e
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install python-dotenv pyyaml
@@ -56,37 +52,23 @@ jobs:
           print("[env] HOST/PORT  =", os.getenv("SMTP_HOST"), os.getenv("SMTP_PORT"))
           PY
 
-      # nur bei manuellem Start + Checkbox
-      - name: Send test mail (optional)
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.send_testmail == 'true' }}
+      - name: Run AGENT (should send email)
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO:  ${{ secrets.EMAIL_TO }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          TZ: Europe/Berlin
         run: |
-          if [ -f send_testmail.py ]; then
-            python send_testmail.py
-          else
-            echo "[skip] send_testmail.py nicht gefunden – überspringe Testmail."
-          fi
-
-      - name: Run agent
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-        run: |
-          # Defaults für Cron / fehlende Inputs per Bash setzen
+          set -euxo pipefail
           SYM="${{ github.event.inputs.symbols }}"
           TZV="${{ github.event.inputs.tz }}"
           [ -z "$SYM" ] && SYM="EURUSD=X"
           [ -z "$TZV" ] && TZV="Europe/Berlin"
           echo "[run] symbols=$SYM tz=$TZV"
-          python agent.py --symbols "$SYM" --tz "$TZV" --email
+          python -u agent.py --symbols "$SYM" --tz "$TZV" --email
+          echo "[AGENT_STEP] agent.py finished"
 
       - name: Upload charts
         if: always()

@@ -72,3 +72,14 @@ def regime_signal(
 
     return {"bias": "NEUTRAL",
             "reasons": [f"Mischlage (H4_up={h4_up}, D1_up={d1_up}, H1_up={h1_up})"]}
+    def ema_slope(series: pd.Series, length: int = 50) -> pd.Series:
+    """
+    Berechnet die Steigung einer EMA-Serie.
+    Gibt den Unterschied zwischen aktuellem und vorherigem EMA zurück.
+    """
+    import pandas_ta as ta
+    ema = ta.ema(series, length=length)
+    if ema is None:
+        return pd.Series(np.nan, index=series.index)
+    return ema.diff()
+    

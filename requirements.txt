@@ -1,8 +1,15 @@
-yfinance>=0.2.52
-pandas>=2.2.2
-numpy>=1.26.4
-pandas_ta>=0.3.14b
-mplfinance>=0.12.10b0
-matplotlib>=3.8.4
-python-dotenv
-pyyaml
+# Basis
+numpy==1.26.4
+pandas==2.2.2
+yfinance==0.2.52
+pandas-ta==0.3.14b
+
+# Reports
+reportlab==4.2.2
+
+# Config / Utils
+python-dotenv==1.0.1
+pyyaml==6.0.2
+
+# Optional (falls du Visualisierung oder Debugging brauchst)
+matplotlib==3.9.2

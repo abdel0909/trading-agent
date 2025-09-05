@@ -17,6 +17,10 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    env:
+      # PYTHONPATH, damit Inline-Python utils.emailer importieren kann
+      PYTHONPATH: ${{ github.workspace }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,6 +73,27 @@ jobs:
           echo "[run] symbols=$SYM tz=$TZV"
           python -u agent.py --symbols "$SYM" --tz "$TZV" --email
           echo "[AGENT_STEP] agent.py finished"
+
+      # >>> HARTE SICHERUNG: schicke IMMER eine Ping-Mail, egal ob Agent gesendet hat
+      - name: Force Ping Mail (always)
+        if: always()
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+        run: |
+          set -e
+          echo "[PING] invoking utils.emailer.send_email"
+          python - <<'PY'
+          import os, datetime
+          from utils.emailer import send_email
+          sub = f"[PING] Agent runner alive — {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+          html = "<p>Dieser Ping beweist: Secrets & SMTP funktionieren im gleichen Job wie der Agent.</p>"
+          ok = send_email(sub, html, [])
+          print("[PING] result:", ok)
+          PY
 
       - name: Upload charts
         if: always()

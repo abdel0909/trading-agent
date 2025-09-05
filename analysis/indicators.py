@@ -1,32 +1,101 @@
+# analysis/indicators.py
 from __future__ import annotations
-import numpy as np
+from typing import Optional
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
 
-def add_indicators(df: pd.DataFrame, ema_fast=50, ema_slow=200, rsi_len=14, adx_len=14, atr_len=14,
-                   psar_af=0.02, psar_max_af=0.2) -> pd.DataFrame:
-    d = df.copy()
-    d["EMA50"]  = ta.ema(d["Close"], length=ema_fast)
-    d["EMA200"] = ta.ema(d["Close"], length=ema_slow)
-    adx = ta.adx(d["High"], d["Low"], d["Close"], length=adx_len)
-    d["ADX"] = adx[f"ADX_{adx_len}"]
-    d["+DI"] = adx[f"DMP_{adx_len}"]
-    d["-DI"] = adx[f"DMN_{adx_len}"]
-    d["RSI"] = ta.rsi(d["Close"], length=rsi_len)
-    d["ATR"] = ta.atr(d["High"], d["Low"], d["Close"], length=atr_len)
+def _col_like(df: pd.DataFrame, prefix: str) -> Optional[str]:
+    """First column whose upper name starts with prefix (upper)."""
+    up = prefix.upper()
+    for c in df.columns:
+        if str(c).upper().startswith(up):
+            return c
+    return None
 
-    psar = ta.psar(d["High"], d["Low"], d["Close"], af=psar_af, max_af=psar_max_af)
-    psar_cols = [c for c in psar.columns if c.startswith("PSAR")]
-    d["PSAR"] = psar[psar_cols[0]]
-    for c in psar_cols[1:]:
-        d["PSAR"] = d["PSAR"].fillna(psar[c])
-    return d
+def add_indicators(
+    df: pd.DataFrame,
+    ema_fast: int = 50,
+    ema_slow: int = 200,
+    rsi_len: int = 14,
+    adx_len: int = 14,
+    atr_len: int = 14,
+    psar_af: float = 0.02,
+    psar_max_af: float = 0.2,
+) -> pd.DataFrame:
+    """
+    Fügt robuste TA-Spalten hinzu. Crasht nicht, wenn ein Indikator wegen
+    Datenlänge/Version None liefert – dann kommen NaNs, und der Agent kann
+    sauber mit 'NEUTRAL (Indikatoren unvollständig)' weiterlaufen.
+    """
+    import pandas_ta as ta
 
-def ema_slope(series: pd.Series, lookback: int = 5) -> float:
-    if len(series) < lookback + 1:
-        return np.nan
-    a, b = series.iloc[-1], series.iloc[-(lookback+1)]
+    out = df.copy()
+
+    # Spalten normalisieren (Case)
+    for k in ["Open", "High", "Low", "Close"]:
+        if k not in out.columns and k.lower() in out.columns:
+            out[k] = out[k.lower()]
+
+    h = out.get("High")
+    l = out.get("Low")
+    c = out.get("Close")
+
+    # EMA
     try:
-        return ((a / b) - 1.0) * 100.0 / lookback
+        ema_f = ta.ema(c, length=ema_fast)
     except Exception:
-        return np.nan
+        ema_f = None
+    out["EMA50"] = ema_f if ema_f is not None else pd.Series(np.nan, index=out.index)
+
+    try:
+        ema_s = ta.ema(c, length=ema_slow)
+    except Exception:
+        ema_s = None
+    out["EMA200"] = ema_s if ema_s is not None else pd.Series(np.nan, index=out.index)
+
+    # RSI
+    try:
+        rsi = ta.rsi(c, length=rsi_len)
+    except Exception:
+        rsi = None
+    out["RSI"] = rsi if rsi is not None else pd.Series(np.nan, index=out.index)
+
+    # ADX (+DI / -DI)
+    try:
+        adx_df = ta.adx(h, l, c, length=adx_len)
+    except Exception:
+        adx_df = None
+    if isinstance(adx_df, pd.DataFrame) and not adx_df.empty:
+        adx_col = _col_like(adx_df, "ADX")
+        dmp_col = _col_like(adx_df, "DMP") or _col_like(adx_df, "+DI")
+        dmn_col = _col_like(adx_df, "DMN") or _col_like(adx_df, "-DI")
+        out["ADX"] = adx_df[adx_col] if adx_col else pd.Series(np.nan, index=out.index)
+        out["+DI"] = adx_df[dmp_col] if dmp_col else pd.Series(np.nan, index=out.index)
+        out["-DI"] = adx_df[dmn_col] if dmn_col else pd.Series(np.nan, index=out.index)
+    else:
+        out["ADX"] = pd.Series(np.nan, index=out.index)
+        out["+DI"] = pd.Series(np.nan, index=out.index)
+        out["-DI"] = pd.Series(np.nan, index=out.index)
+
+    # ATR
+    try:
+        atr = ta.atr(h, l, c, length=atr_len)
+    except Exception:
+        atr = None
+    out["ATR"] = atr if atr is not None else pd.Series(np.nan, index=out.index)
+
+    # PSAR (einige Versionen liefern PSARl/PSARs/PSAR)
+    try:
+        psar_df = ta.psar(h, l, c, af=psar_af, max_af=psar_max_af)
+    except Exception:
+        psar_df = None
+    if isinstance(psar_df, pd.DataFrame) and not psar_df.empty:
+        psar_col = _col_like(psar_df, "PSAR")
+        out["PSAR"] = psar_df[psar_col] if psar_col else pd.Series(np.nan, index=out.index)
+    elif psar_df is not None and not isinstance(psar_df, pd.DataFrame):
+        # manche Versionen geben eine Series zurück
+        out["PSAR"] = psar_df
+    else:
+        out["PSAR"] = pd.Series(np.nan, index=out.index)
+
+    return out

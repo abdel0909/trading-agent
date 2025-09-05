@@ -7,9 +7,9 @@ from email import encoders
 
 def send_email(subject: str, html: str, attachments=None) -> bool:
     attachments = attachments or []
-    user = os.getenv("SMTP_USER")
-    pw   = os.getenv("SMTP_PASS")
-    to   = os.getenv("EMAIL_TO")
+    user = os.getenv("bouardjaa@gmail.com")
+    pw   = os.getenv("zwqdwuyxdzydtaqu")
+    to   = os.getenv("bouardjaa@gmail.com")
     host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     port = int(os.getenv("SMTP_PORT", "587"))
 

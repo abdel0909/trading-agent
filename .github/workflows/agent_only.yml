@@ -17,9 +17,15 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+
+    # 🔴 ZENTRAL: alle Mail-Variablen + Pfad nur einmal setzen
     env:
-      # PYTHONPATH, damit Inline-Python utils.emailer importieren kann
       PYTHONPATH: ${{ github.workspace }}
+      SMTP_USER:  ${{ secrets.SMTP_USER }}
+      SMTP_PASS:  ${{ secrets.SMTP_PASS }}
+      EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+      SMTP_HOST:  ${{ secrets.SMTP_HOST }}
+      SMTP_PORT:  ${{ secrets.SMTP_PORT }}
 
     steps:
       - name: Checkout
@@ -36,15 +42,10 @@ jobs:
           set -e
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Fallbacks
           pip install python-dotenv pyyaml
 
       - name: Debug mail env (masked)
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
         run: |
           python - <<'PY'
           import os
@@ -57,13 +58,6 @@ jobs:
           PY
 
       - name: Run AGENT (should send email)
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          TZ: Europe/Berlin
         run: |
           set -euxo pipefail
           SYM="${{ github.event.inputs.symbols }}"
@@ -74,23 +68,17 @@ jobs:
           python -u agent.py --symbols "$SYM" --tz "$TZV" --email
           echo "[AGENT_STEP] agent.py finished"
 
-      # >>> HARTE SICHERUNG: schicke IMMER eine Ping-Mail, egal ob Agent gesendet hat
+      # Fail-safe: kommt IMMER eine Mail, selbst wenn Agent geskippt hätte
       - name: Force Ping Mail (always)
         if: always()
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
         run: |
           set -e
           echo "[PING] invoking utils.emailer.send_email"
           python - <<'PY'
-          import os, datetime
+          import datetime
           from utils.emailer import send_email
-          sub = f"[PING] Agent runner alive — {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
-          html = "<p>Dieser Ping beweist: Secrets & SMTP funktionieren im gleichen Job wie der Agent.</p>"
+          sub = f"[PING] Agent runner alive — {datetime.datetime.utcnow():%Y-%m-%d %H:%M:%S} UTC"
+          html = "<p>Secrets & SMTP ok – gleicher Job wie der Agent.</p>"
           ok = send_email(sub, html, [])
           print("[PING] result:", ok)
           PY

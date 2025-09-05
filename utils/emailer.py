@@ -1,54 +1,59 @@
 # utils/emailer.py
-import os
-import smtplib, mimetypes
+import os, smtplib, mimetypes
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
 from email import encoders
-from typing import List, Optional
-from dotenv import load_dotenv
 
-# Erst .env laden (falls lokal)
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-ENV_PATH = os.path.join(BASE_DIR, ".env")
-if os.path.exists(ENV_PATH):
-    load_dotenv(dotenv_path=ENV_PATH)
+def send_email(subject: str, html: str, attachments=None) -> bool:
+    attachments = attachments or []
+    user = os.getenv("SMTP_USER")
+    pw   = os.getenv("SMTP_PASS")
+    to   = os.getenv("EMAIL_TO")
+    host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    port = int(os.getenv("SMTP_PORT", "587"))
 
-# Variablen (Secrets oder .env)
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
-EMAIL_TO  = os.getenv("EMAIL_TO")
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-TZ        = os.getenv("TZ", "Europe/Berlin")
+    print("[mailer] Konfiguration:")
+    print("  EMAIL_TO   =", to or "None")
+    print("  SMTP_USER  =", user or "None")
+    print("  SMTP_PASS? =", "JA" if pw else "NEIN")
+    print("  HOST/PORT  =", host, port)
+    print("  Attachments:", attachments if attachments else "[]")
 
-def send_email(subject: str, body: str, attachments: Optional[List[str]] = None):
-    msg = MIMEMultipart()
-    msg["From"] = SMTP_USER
-    msg["To"] = EMAIL_TO
-    msg["Subject"] = subject
+    # Harte Validierung, sonst explizit fehlschlagen
+    if not (user and pw and to):
+        raise RuntimeError("SMTP env unvollständig: USER/PASS/EMAIL_TO erforderlich")
 
-    msg.attach(MIMEText(body, "html"))
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = user           # Gmail erwartet die eigene Adresse hier
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.attach(MIMEText(html or "(leer)", "html"))
 
-    # Anhänge hinzufügen
-    if attachments:
-        for file_path in attachments:
-            if not os.path.isfile(file_path):
-                continue
-            ctype, encoding = mimetypes.guess_type(file_path)
-            if ctype is None or encoding is not None:
-                ctype = "application/octet-stream"
-            maintype, subtype = ctype.split("/", 1)
-            with open(file_path, "rb") as f:
-                part = MIMEBase(maintype, subtype)
-                part.set_payload(f.read())
+        for path in attachments:
+            try:
+                ctype, _ = mimetypes.guess_type(path)
+                maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+                with open(path, "rb") as f:
+                    part = MIMEBase(maintype, subtype)
+                    part.set_payload(f.read())
                 encoders.encode_base64(part)
-                part.add_header("Content-Disposition", "attachment", filename=os.path.basename(file_path))
+                part.add_header("Content-Disposition", f'attachment; filename="{os.path.basename(path)}"')
                 msg.attach(part)
+            except Exception as e:
+                print(f"[mailer] Anhang übersprungen ({path}): {e!r}")
 
-    # E-Mail senden
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(SMTP_USER, EMAIL_TO, msg.as_string())
-        print(f"[mailer] Mail erfolgreich gesendet an {EMAIL_TO}")
+        print(f"[mailer] Verbinde zu {host}:{port} …")
+        with smtplib.SMTP(host, port, timeout=30) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(user, pw)
+            server.sendmail(user, [to], msg.as_string())
+        print(f"[mailer] Mail erfolgreich gesendet an {to}")
+        return True
+
+    except Exception as e:
+        print("[mailer] FEHLER beim Senden:", repr(e))
+        # Wichtig: False zurückgeben ODER Exception werfen; wir werfen weiter:
+        raise

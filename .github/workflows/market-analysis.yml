@@ -1,13 +1,23 @@
 name: Market Analysis 15m
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Kommagetrennte Symbole (z.B. EURUSD=X,GBPUSD=X)"
+        required: false
+        default: "EURUSD=X"
+      tz:
+        description: "Zeitzone (IANA)"
+        required: false
+        default: "Europe/Berlin"
+  schedule:
+    - cron: "*/15 * * * *"   # alle 15 Minuten
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,17 +26,61 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # Fallbacks/Runner-Sicherheit:
+          pip install python-dotenv pyyaml
 
-      - name: Run agent
+      # --- DEBUG: zeigen, ob Secrets ankommen ---
+      - name: Debug mail env
         env:
-          TZ: Europe/Berlin
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
         run: |
-          python agent.py --symbols "EURUSD=X" --tz "Europe/Berlin" --email
+          python - <<'PY'
+          import os
+          print("[env] EMAIL_TO   =", os.getenv("EMAIL_TO"))
+          print("[env] SMTP_USER  =", os.getenv("SMTP_USER"))
+          print("[env] SMTP_PASS? =", "JA" if os.getenv("SMTP_PASS") else "NEIN")
+          print("[env] HOST/PORT  =", os.getenv("SMTP_HOST"), os.getenv("SMTP_PORT"))
+          PY
+
+      # --- ISOLIERTER SMTP-TEST (scheitert nicht den gesamten Run) ---
+      - name: Send test mail (isolation)
+        continue-on-error: true
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+        run: |
+          if [ -f send_testmail.py ]; then
+            python send_testmail.py
+          else
+            echo "[skip] send_testmail.py nicht gefunden – überspringe isolierten Test."
+          fi
+
+      # --- AGENT AUSFÜHREN (mit Versand) ---
+      - name: Run agent
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+        run: |
+          SYM="${{ github.event.inputs.symbols }}"
+          TZV="${{ github.event.inputs.tz }}"
+          if [ -z "$SYM" ]; then SYM="EURUSD=X"; fi
+          if [ -z "$TZV" ]; then TZV="Europe/Berlin"; fi
+
+          echo "[run] symbols=$SYM tz=$TZV"
+          python agent.py --symbols "$SYM" --tz "$TZV" --email

@@ -1,171 +1,122 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# --- NEU/ERSATZ in agent.py -------------------------------------------------
 from __future__ import annotations
+import time
+from typing import Iterable
 
-import os, argparse, traceback, textwrap
-from zoneinfo import ZoneInfo
-from dotenv import load_dotenv
+REQUIRED_COLS = ["Close", "EMA_50", "ADX_14", "DMP_14", "DMN_14"]
 
-from utils.helpers import load_yaml, now_tz
-from utils.logger import get_logger
-from utils.emailer import send_email  # nutzt bereits os.getenv (Secrets/.env)
+def _have_cols(df: pd.DataFrame, cols: Iterable[str]) -> list[str]:
+    """Gibt eine Liste fehlender Spalten zurück (leer = alles ok)."""
+    return [c for c in cols if c not in df.columns]
 
-# --- NEU: .env als Fallback laden (lokal); in Codespaces kommen die Secrets als Env-Variablen
-BASE_DIR = os.path.dirname(__file__)
-ENV_PATH = os.path.join(BASE_DIR, ".env")
-if os.path.exists(ENV_PATH):
-    load_dotenv(ENV_PATH)
-
-def _env_snapshot() -> str:
-    """Maskierter Überblick über die Mail-Umgebung (aus Secrets/.env)."""
-    u = os.getenv("bouardjaa@gmail.com")
-    t = os.getenv("bouardjaa@gmail.com")
-    h = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    p = os.getenv("SMTP_PORT", "587")
-    pw = os.getenv("zwqdwuyxdzydtaqu")
-    pw_mask = "gesetzt" if pw else "NICHT gesetzt"
-    lines = [
-        "[emailier] Konfiguration geladen:",
-        f"  EMAIL_TO   = {t}",
-        f"  SMTP_USER  = {u}",
-        f"  SMTP_PASS? = {pw_mask}",
-        f"  SMTP_HOST  = {h}",
-        f"  SMTP_PORT  = {p}",
-        "",
-    ]
-    return "\n".join(lines)
-
-# --------------------------------------------------------------------
-# ab hier dein bestehender Analyse-/Reporting-Code
-from analysis.data_loader import load_yf, resample_ohlc
-from analysis.indicators import add_indicators
-from analysis.charting import plot_m15
-from analysis.regime import regime_signal as regime_signal_safe
-from strategies.wilder import WilderStrategy
-
-def build_html(symbol: str, tz: str, last_close: float, last_dt, regime: dict, trade: dict) -> str:
-    return f"""
-    <h2>{symbol} – Multi-Timeframe Analyse</h2>
-    <p><b>Zeit</b>: {last_dt.strftime('%Y-%m-%d %H:%M:%S %Z')}</p>
-    <p><b>Regime</b>: {regime['bias']}<br>
-       <i>Begründung</i>: {'; '.join(regime.get('reasons', []))}</p>
-    <p><b>Letzter Preis (M15)</b>: {last_close:.5f}</p>
-    <h3>Handelsvorschlag (M15)</h3>
-    <ul>
-      <li><b>Aktion</b>: {trade['action']}</li>
-      <li><b>Entry</b>: {trade['entry'] if trade['entry'] else '-'}</li>
-      <li><b>SL</b>: {trade['sl'] if trade['sl'] else '-'}</li>
-      <li><b>TP</b>: {trade['tp'] if trade['tp'] else '-'}</li>
-      <li><b>Hinweis</b>: {trade['note']}</li>
-    </ul>
-    <p><small>SL/TP ATR-basiert (ATR14, M15). Früher Exit bei PSAR-Flip oder RSI-50 Gegensignal.</small></p>
+def _safe_add_indicators(df: pd.DataFrame, p: dict) -> pd.DataFrame:
     """
-
-def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
-    p = cfg["params"]; out_dir = cfg["out_dir"]
-
-    df15 = load_yf(symbol, interval="15m", period="60d")
-    df15 = add_indicators(
-        df15,
+    Ruft add_indicators(...) auf und sorgt dafür, dass fehlende Spalten
+    wenigstens existieren (mit NaN), damit Downstream-Code stabil bleibt.
+    """
+    out = add_indicators(
+        df.copy(),
         ema_fast=p["ema_fast"], ema_slow=p["ema_slow"],
         rsi_len=p["rsi_len"], adx_len=p["adx_len"], atr_len=p["atr_len"],
         psar_af=p["psar"]["af"], psar_max_af=p["psar"]["max_af"]
-    ).dropna()
+    )
+    # Spalten ggf. anlegen
+    for c in REQUIRED_COLS:
+        if c not in out.columns:
+            out[c] = pd.NA
+    return out
 
-    h1 = add_indicators(resample_ohlc(df15, "1H"), **{
-        "ema_fast": p["ema_fast"], "ema_slow": p["ema_slow"],
-        "rsi_len": p["rsi_len"], "adx_len": p["adx_len"], "atr_len": p["atr_len"],
-        "psar_af": p["psar"]["af"], "psar_max_af": p["psar"]["max_af"]
-    }).dropna()
+def _load_yf_with_retry(symbol: str, interval: str, period: str, tries: int = 3, wait: float = 3.0) -> pd.DataFrame:
+    """
+    Wrapper um load_yf() mit kleinen Retries, falls YF drosselt (RateLimit).
+    """
+    last_exc = None
+    for i in range(tries):
+        try:
+            return load_yf(symbol, interval=interval, period=period)
+        except Exception as e:
+            last_exc = e
+            time.sleep(wait)
+    # letzter Versuch – Exception hochreichen
+    raise last_exc
 
-    h4 = add_indicators(resample_ohlc(df15, "4H"), **{
-        "ema_fast": p["ema_fast"], "ema_slow": p["ema_slow"],
-        "rsi_len": p["rsi_len"], "adx_len": p["adx_len"], "atr_len": p["atr_len"],
-        "psar_af": p["psar"]["af"], "psar_max_af": p["psar"]["max_af"]
-    }).dropna()
+def analyze_symbol(symbol: str, tz: str, cfg: dict, logger) -> dict:
+    """
+    Vollständige Analyse inkl. robusten Checks:
+    - Daten via YF mit Retries laden
+    - Indikatoren hinzufügen (fehlende Spalten werden als NaN ergänzt)
+    - Vor Regime/Strategie prüfen, ob Pflichtspalten vorhanden + nicht-leer
+    - Wenn etwas fehlt => 'NEUTRAL' + Begründung statt Crash
+    """
+    p = cfg["params"]
+    out_dir = cfg["out_dir"]
+    reasons = []
 
-    d1 = add_indicators(load_yf(symbol, interval="1d", period="6mo"), **{
-        "ema_fast": p["ema_fast"], "ema_slow": p["ema_slow"],
-        "rsi_len": p["rsi_len"], "adx_len": p["adx_len"], "atr_len": p["atr_len"],
-        "psar_af": p["psar"]["af"], "psar_max_af": p["psar"]["max_af"]
-    }).dropna()
+    # 15m Daten holen
+    try:
+        df15 = _load_yf_with_retry(symbol, interval="15m", period="60d")
+    except Exception as e:
+        # Kein Abbruch – wir schicken einen sauberen Report
+        reasons.append(f"Download 15m fehlgeschlagen: {type(e).__name__}: {e}")
+        df15 = pd.DataFrame(columns=["Close"])
+    # Indikatoren M15
+    df15 = _safe_add_indicators(df15, p).dropna(how="all")
 
+    # H1/H4 aus 15m resamplen (auch wenn df15 dünn ist)
+    h1 = resample_ohlc(df15, "1H")
+    h4 = resample_ohlc(df15, "4H")
+    h1 = _safe_add_indicators(h1, p).dropna(how="all")
+    h4 = _safe_add_indicators(h4, p).dropna(how="all")
+
+    # D1 separat (robust + Retries)
+    try:
+        d1 = _load_yf_with_retry(symbol, interval="1d", period="6mo")
+    except Exception as e:
+        reasons.append(f"Download D1 fehlgeschlagen: {type(e).__name__}: {e}")
+        d1 = pd.DataFrame(columns=["Close"])
+    d1 = _safe_add_indicators(d1, p).dropna(how="all")
+
+    # Pflichtspalten-Check (nur ob vorhanden + nicht komplett leer)
+    def _missing_or_all_nan(df: pd.DataFrame, label: str) -> list[str]:
+        miss = _have_cols(df, REQUIRED_COLS)
+        probs = []
+        if miss:
+            probs += [f"{label}: fehlt {', '.join(miss)}"]
+        else:
+            # sind sie komplett leer?
+            empty = [c for c in REQUIRED_COLS if df[c].dropna().empty]
+            if empty:
+                probs += [f"{label}: leer {', '.join(empty)}"]
+        return probs
+
+    reasons += _missing_or_all_nan(d1, "D1")
+    reasons += _missing_or_all_nan(h4, "H4")
+    reasons += _missing_or_all_nan(h1, "H1")
+
+    # Falls irgendwas Grundlegendes fehlt → neutraler Regime-Ausgang
+    if reasons:
+        regime = {"bias": "NEUTRAL", "reasons": reasons}
+        trade = {"action": "WAIT", "entry": None, "sl": None, "tp": None,
+                 "note": "Indikatoren/Daten unvollständig – später erneut versuchen."}
+        # Chart nur zeichnen, wenn wir M15 wenigstens mit Close haben
+        chart_path = plot_m15(df15, symbol, tz, out_dir=out_dir) if not df15.empty else None
+
+        last_close = float(df15["Close"].dropna().iloc[-1]) if "Close" in df15.columns and not df15["Close"].dropna().empty else float("nan")
+        last_dt    = (df15.index[-1].astimezone(ZoneInfo(tz)) if not df15.empty else now_tz(tz))
+        html = build_html(symbol, tz, last_close, last_dt, regime, trade)
+        return {"symbol": symbol, "html": html, "chart_path": chart_path}
+
+    # Regime (sichere Version) + Strategie
     regime = regime_signal_safe(d1, h4, h1)
-    strat  = WilderStrategy(cfg)
-    trade  = strat.signal(df15, regime["bias"])
 
+    strat = WilderStrategy(cfg)
+    trade = strat.signal(df15, regime["bias"])
+
+    # Chart
     chart_path = plot_m15(df15, symbol, tz, out_dir=out_dir)
 
-    last_close = float(df15["Close"].iloc[-1])
-    last_dt    = df15.index[-1].astimezone(ZoneInfo(tz))
+    last_close = float(df15["Close"].iloc[-1]) if "Close" in df15.columns and not df15["Close"].empty else float("nan")
+    last_dt    = df15.index[-1].astimezone(ZoneInfo(tz)) if not df15.empty else now_tz(tz)
     html = build_html(symbol, tz, last_close, last_dt, regime, trade)
     return {"symbol": symbol, "html": html, "chart_path": chart_path}
-
-def parse_args():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--symbols", type=str, default="", help="Kommagetrennt; leer => configs/symbols.yaml")
-    ap.add_argument("--tz", type=str, default="", help="override Zeitzone")
-    ap.add_argument("--email", action="store_true", help="Bericht per E-Mail senden")
-    # optionale CLI-Overrides, falls du .env/Secrets umgehen willst:
-    ap.add_argument("--smtp-user", type=str, default=None)
-    ap.add_argument("--smtp-pass", type=str, default=None)
-    ap.add_argument("--smtp-to",   type=str, default=None)
-    ap.add_argument("--smtp-host", type=str, default=None)
-    ap.add_argument("--smtp-port", type=str, default=None)
-    ap.add_argument("--settings", type=str, default="configs/settings.yaml")
-    ap.add_argument("--symbols_cfg", type=str, default="configs/symbols.yaml")
-    return ap.parse_args()
-
-def _apply_cli_overrides(args):
-    """CLI > Env: erlaubt Test ohne .env/Secrets."""
-    if args.smtp_user: os.environ["SMTP_USER"] = args.smtp_user
-    if args.smtp_pass: os.environ["SMTP_PASS"] = args.smtp_pass
-    if args.smtp_to:   os.environ["EMAIL_TO"]  = args.smtp_to
-    if args.smtp_host: os.environ["SMTP_HOST"] = args.smtp_host
-    if args.smtp_port: os.environ["SMTP_PORT"] = str(args.smtp_port)
-
-def main():
-    logger = get_logger()
-    args = parse_args()
-    _apply_cli_overrides(args)
-
-    # Sichtbarer Env-Snapshot (maskiert)
-    print(_env_snapshot())
-
-    cfg = load_yaml(args.settings)
-    tz  = args.tz or cfg.get("timezone") or os.environ.get("TZ", "Europe/Berlin")
-
-    if args.symbols:
-        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-    else:
-        sy_cfg = load_yaml(args.symbols_cfg)
-        symbols = sy_cfg.get("symbols", ["EURUSD=X"])
-
-    all_html, attachments = [], []
-    for s in symbols:
-        try:
-            res = analyze_symbol(s, tz, cfg, logger)
-            all_html.append(res["html"])
-            attachments.append(res["chart_path"])
-        except Exception:
-            all_html.append(f"<h2>{s}</h2><pre>{traceback.format_exc()}</pre>")
-
-    subject = f"KI Marktanalyse ({', '.join(symbols)}) – {now_tz(tz).strftime('%Y-%m-%d %H:%M')}"
-    body = "<hr>".join(all_html)
-
-    send_flag = args.email or bool(cfg.get("report", {}).get("email", False))
-    if send_flag:
-        try:
-            send_email(subject, body, attachments)
-        except Exception:
-            print("[agent] Versand fehlgeschlagen – Report nur in Konsole ausgegeben.")
-            send_flag = False
-
-    if not send_flag:
-        print(subject)
-        print("=" * 80)
-        print(textwrap.fill(body, 120))
-        print("\nCharts:", attachments)
-
-if __name__ == "__main__":
-    main()
+# --- ENDE NEU ---------------------------------------------------------------

@@ -4,12 +4,13 @@ pandas==2.2.2
 yfinance==0.2.52
 pandas-ta==0.3.14b
 
+# Charts
+matplotlib==3.9.2
+mplfinance==0.12.10b0
+
 # Reports
 reportlab==4.2.2
 
 # Config / Utils
 python-dotenv==1.0.1
 pyyaml==6.0.2
-
-# Optional (falls du Visualisierung oder Debugging brauchst)
-matplotlib==3.9.2

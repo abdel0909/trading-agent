@@ -1,101 +1,116 @@
 # analysis/indicators.py
 from __future__ import annotations
-from typing import Optional
-import pandas as pd
-import numpy as np
 
-def _col_like(df: pd.DataFrame, prefix: str) -> Optional[str]:
-    """First column whose upper name starts with prefix (upper)."""
-    up = prefix.upper()
-    for c in df.columns:
-        if str(c).upper().startswith(up):
-            return c
-    return None
+from typing import Optional
+import numpy as np
+import pandas as pd
+import pandas_ta as ta
+
+
+def _pick_column(df: pd.DataFrame, *candidates: str) -> pd.Series:
+    """Nimmt die erste passende Spalte – tolerant ggü. leicht anderen Namen."""
+    if df is None or df.empty:
+        return pd.Series(np.nan, index=pd.RangeIndex(0))
+    # 1) exakter Treffer
+    for c in candidates:
+        if c in df.columns:
+            return df[c]
+    # 2) fuzzy: startswith / enthält
+    upcols = {c.upper(): c for c in df.columns}
+    for want in candidates:
+        w = want.upper().replace("+", "P").replace("-", "M")
+        for up, real in upcols.items():
+            if w in up or up.startswith(w):
+                return df[real]
+    # 3) Fallback: erste Spalte
+    return df[df.columns[0]]
+
+
+def _normalize_adx(adx_df: pd.DataFrame) -> pd.DataFrame:
+    """Bringt ADX/DMP/DMM auf ein einheitliches Schema."""
+    out = pd.DataFrame(index=adx_df.index)
+
+    # ADX
+    out["ADX"] = _pick_column(
+        adx_df, "ADX_14", "ADX14", "ADX"
+    )
+
+    # +DI (DMP)
+    out["DMP"] = _pick_column(
+        adx_df, "DMP_14", "DMP14", "DM+_14", "PLUS_DI_14", "PDI_14", "PDI"
+    )
+
+    # -DI (DMM)
+    out["DMM"] = _pick_column(
+        adx_df, "DMM_14", "DMM14", "DM-_14", "MINUS_DI_14", "MDI_14", "MDI"
+    )
+
+    return out
+
 
 def add_indicators(
     df: pd.DataFrame,
-    ema_fast: int = 50,
-    ema_slow: int = 200,
-    rsi_len: int = 14,
     adx_len: int = 14,
-    atr_len: int = 14,
-    psar_af: float = 0.02,
-    psar_max_af: float = 0.2,
+    rsi_len: int = 14,
+    ema_len: int = 50,
+    psar: bool = False,
 ) -> pd.DataFrame:
     """
-    Fügt robuste TA-Spalten hinzu. Crasht nicht, wenn ein Indikator wegen
-    Datenlänge/Version None liefert – dann kommen NaNs, und der Agent kann
-    sauber mit 'NEUTRAL (Indikatoren unvollständig)' weiterlaufen.
+    Fügt (robust) Wilder-Indikatoren hinzu:
+      - ADX/DMI  -> Spalten: ADX, DMP, DMM
+      - RSI      -> Spalte:  RSI
+      - EMA      -> Spalte:  EMA_{ema_len}
+      - PSAR     -> optional Spalte: PSAR
+    Fällt bei Datenproblemen auf NaN zurück (kein Traceback).
     """
-    import pandas_ta as ta
+    if df is None or df.empty:
+        return df
 
-    out = df.copy()
+    need = {"Close", "High", "Low"}
+    if not need.issubset(df.columns):
+        # Nichts kaputt machen, aber sauber zurückgeben
+        return df.copy()
 
-    # Spalten normalisieren (Case)
-    for k in ["Open", "High", "Low", "Close"]:
-        if k not in out.columns and k.lower() in out.columns:
-            out[k] = out[k.lower()]
+    df = df.copy()
 
-    h = out.get("High")
-    l = out.get("Low")
-    c = out.get("Close")
-
-    # EMA
+    # --- ADX/DMI ---
     try:
-        ema_f = ta.ema(c, length=ema_fast)
+        adx_raw = ta.adx(
+            high=df["High"], low=df["Low"], close=df["Close"], length=adx_len
+        )
+        if adx_raw is not None and not adx_raw.empty:
+            adx_norm = _normalize_adx(adx_raw)
+            for c in ["ADX", "DMP", "DMM"]:
+                df[c] = pd.to_numeric(adx_norm[c], errors="coerce")
+        else:
+            df[["ADX", "DMP", "DMM"]] = np.nan
     except Exception:
-        ema_f = None
-    out["EMA50"] = ema_f if ema_f is not None else pd.Series(np.nan, index=out.index)
+        df[["ADX", "DMP", "DMM"]] = np.nan
 
+    # --- RSI ---
     try:
-        ema_s = ta.ema(c, length=ema_slow)
+        df["RSI"] = pd.to_numeric(ta.rsi(df["Close"], length=rsi_len), errors="coerce")
     except Exception:
-        ema_s = None
-    out["EMA200"] = ema_s if ema_s is not None else pd.Series(np.nan, index=out.index)
+        df["RSI"] = np.nan
 
-    # RSI
+    # --- EMA ---
+    ema_col = f"EMA_{ema_len}"
     try:
-        rsi = ta.rsi(c, length=rsi_len)
+        df[ema_col] = pd.to_numeric(ta.ema(df["Close"], length=ema_len), errors="coerce")
     except Exception:
-        rsi = None
-    out["RSI"] = rsi if rsi is not None else pd.Series(np.nan, index=out.index)
+        df[ema_col] = np.nan
 
-    # ADX (+DI / -DI)
-    try:
-        adx_df = ta.adx(h, l, c, length=adx_len)
-    except Exception:
-        adx_df = None
-    if isinstance(adx_df, pd.DataFrame) and not adx_df.empty:
-        adx_col = _col_like(adx_df, "ADX")
-        dmp_col = _col_like(adx_df, "DMP") or _col_like(adx_df, "+DI")
-        dmn_col = _col_like(adx_df, "DMN") or _col_like(adx_df, "-DI")
-        out["ADX"] = adx_df[adx_col] if adx_col else pd.Series(np.nan, index=out.index)
-        out["+DI"] = adx_df[dmp_col] if dmp_col else pd.Series(np.nan, index=out.index)
-        out["-DI"] = adx_df[dmn_col] if dmn_col else pd.Series(np.nan, index=out.index)
-    else:
-        out["ADX"] = pd.Series(np.nan, index=out.index)
-        out["+DI"] = pd.Series(np.nan, index=out.index)
-        out["-DI"] = pd.Series(np.nan, index=out.index)
+    # --- PSAR (optional) ---
+    if psar:
+        try:
+            psar_df = ta.psar(high=df["High"], low=df["Low"], close=df["Close"])
+            if psar_df is not None and not psar_df.empty:
+                # nimm irgendeine „PSAR*“-Spalte (bull/bear Variants je nach Version)
+                col = next((c for c in psar_df.columns if "PSAR" in c.upper()), psar_df.columns[-1])
+                df["PSAR"] = pd.to_numeric(psar_df[col], errors="coerce")
+            else:
+                df["PSAR"] = np.nan
+        except Exception:
+            df["PSAR"] = np.nan
 
-    # ATR
-    try:
-        atr = ta.atr(h, l, c, length=atr_len)
-    except Exception:
-        atr = None
-    out["ATR"] = atr if atr is not None else pd.Series(np.nan, index=out.index)
-
-    # PSAR (einige Versionen liefern PSARl/PSARs/PSAR)
-    try:
-        psar_df = ta.psar(h, l, c, af=psar_af, max_af=psar_max_af)
-    except Exception:
-        psar_df = None
-    if isinstance(psar_df, pd.DataFrame) and not psar_df.empty:
-        psar_col = _col_like(psar_df, "PSAR")
-        out["PSAR"] = psar_df[psar_col] if psar_col else pd.Series(np.nan, index=out.index)
-    elif psar_df is not None and not isinstance(psar_df, pd.DataFrame):
-        # manche Versionen geben eine Series zurück
-        out["PSAR"] = psar_df
-    else:
-        out["PSAR"] = pd.Series(np.nan, index=out.index)
-
-    return out
+    return df

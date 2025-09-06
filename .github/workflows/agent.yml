@@ -1,24 +1,24 @@
-name: Market Analysis (Agent ONLY)
+name: Market Analysis 15m (Agent)
 
 on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Kommagetrennte Symbole (z.B. EURUSD=X,GBPUSD=X)"
+        description: "Kommagetrennte Symbole (z. B. EURUSD=X,GBPUSD=X)"
         required: false
         default: "EURUSD=X"
       tz:
-        description: "Zeitzone (IANA, z.B. Europe/Berlin)"
+        description: "Zeitzone (IANA, z. B. Europe/Berlin)"
         required: false
         default: "Europe/Berlin"
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/15 * * * *"   # alle 15 Minuten
 
 jobs:
   run:
     runs-on: ubuntu-latest
 
-    # 🔴 ZENTRAL: alle Mail-Variablen + Pfad nur einmal setzen
+    # 🔴 ZENTRAL: Secrets + PYTHONPATH einmal für den GANZEN Job setzen
     env:
       PYTHONPATH: ${{ github.workspace }}
       SMTP_USER:  ${{ secrets.SMTP_USER }}
@@ -42,7 +42,7 @@ jobs:
           set -e
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Fallbacks
+          # Fallbacks (falls requirements.txt mal schlanker ist)
           pip install python-dotenv pyyaml
 
       - name: Debug mail env (masked)
@@ -60,30 +60,26 @@ jobs:
       - name: Run AGENT (should send email)
         run: |
           set -euxo pipefail
-          SYM="${{ github.event.inputs.symbols }}"
-          TZV="${{ github.event.inputs.tz }}"
-          [ -z "$SYM" ] && SYM="EURUSD=X"
-          [ -z "$TZV" ] && TZV="Europe/Berlin"
+          SYM="${{ github.event.inputs.symbols || 'EURUSD=X' }}"
+          TZV="${{ github.event.inputs.tz || 'Europe/Berlin' }}"
           echo "[run] symbols=$SYM tz=$TZV"
           python -u agent.py --symbols "$SYM" --tz "$TZV" --email
-          echo "[AGENT_STEP] agent.py finished"
+          echo "[AGENT_DONE] agent.py finished"
 
-      # Fail-safe: kommt IMMER eine Mail, selbst wenn Agent geskippt hätte
+      # Sende IMMER eine kurze Ping-Mail – beweist SMTP/Secrets im selben Job
       - name: Force Ping Mail (always)
         if: always()
         run: |
-          set -e
-          echo "[PING] invoking utils.emailer.send_email"
           python - <<'PY'
           import datetime
           from utils.emailer import send_email
-          sub = f"[PING] Agent runner alive — {datetime.datetime.utcnow():%Y-%m-%d %H:%M:%S} UTC"
-          html = "<p>Secrets & SMTP ok – gleicher Job wie der Agent.</p>"
+          sub = f"[PING] Agent runner alive — {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+          html = "<p>Ping aus dem Agent-Workflow (gleicher Job, gleiche Secrets).</p>"
           ok = send_email(sub, html, [])
           print("[PING] result:", ok)
           PY
 
-      - name: Upload charts
+      - name: Upload charts (artifacts)
         if: always()
         uses: actions/upload-artifact@v4
         with:

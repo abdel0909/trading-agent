@@ -1,4 +1,4 @@
-name: Market Analysis 15m (Agent)
+name: Market Analysis 15m (Wilder)
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
 
-    # 🔴 ZENTRAL: Secrets + PYTHONPATH einmal für den GANZEN Job setzen
+    # 🔐 ZENTRAL: Mail-Variablen + PYTHONPATH
     env:
       PYTHONPATH: ${{ github.workspace }}
       SMTP_USER:  ${{ secrets.SMTP_USER }}
@@ -42,42 +42,41 @@ jobs:
           set -e
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # Fallbacks (falls requirements.txt mal schlanker ist)
+          # Safety-Nets, falls requirements.txt mal schlanker ist:
           pip install python-dotenv pyyaml
+
+      # --- Optionaler Guard: am Wochenende skippen (Agent selbst hat Fallback auf Daily) ---
+      # - name: Skip on weekend (UTC)
+      #   run: |
+      #     DOW=$(date -u +%u)   # 1=Mo … 7=So
+      #     if [ "$DOW" -ge 6 ]; then
+      #       echo "Weekend (UTC) – skip run."
+      #       exit 78
+      #     fi
 
       - name: Debug mail env (masked)
         run: |
           python - <<'PY'
           import os
-          def mask(s): 
-              return s if not s else (s[:2] + "***" + s[-2:])
-          print("[env] EMAIL_TO   =", mask(os.getenv("EMAIL_TO")))
-          print("[env] SMTP_USER  =", mask(os.getenv("SMTP_USER")))
-          print("[env] SMTP_PASS? =", "JA" if os.getenv("SMTP_PASS") else "NEIN")
-          print("[env] HOST/PORT  =", os.getenv("SMTP_HOST"), os.getenv("SMTP_PORT"))
+          def mask(v): 
+              return v if not v else (v[:2] + "***" + v[-2:])
+          print("[env] EMAIL_TO  =", mask(os.getenv("EMAIL_TO")))
+          print("[env] SMTP_USER =", mask(os.getenv("SMTP_USER")))
+          print("[env] SMTP_PASS =", "JA" if os.getenv("SMTP_PASS") else "NEIN")
+          print("[env] HOST/PORT =", os.getenv("SMTP_HOST"), os.getenv("SMTP_PORT"))
           PY
 
-      - name: Run AGENT (should send email)
+      - name: Run AGENT (send email)
         run: |
           set -euxo pipefail
-          SYM="${{ github.event.inputs.symbols || 'EURUSD=X' }}"
-          TZV="${{ github.event.inputs.tz || 'Europe/Berlin' }}"
+          SYM="${{ github.event.inputs.symbols }}"
+          TZV="${{ github.event.inputs.tz }}"
+          [ -z "$SYM" ] && SYM="EURUSD=X"
+          [ -z "$TZV" ] && TZV="Europe/Berlin"
+
           echo "[run] symbols=$SYM tz=$TZV"
           python -u agent.py --symbols "$SYM" --tz "$TZV" --email
           echo "[AGENT_DONE] agent.py finished"
-
-      # Sende IMMER eine kurze Ping-Mail – beweist SMTP/Secrets im selben Job
-      - name: Force Ping Mail (always)
-        if: always()
-        run: |
-          python - <<'PY'
-          import datetime
-          from utils.emailer import send_email
-          sub = f"[PING] Agent runner alive — {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
-          html = "<p>Ping aus dem Agent-Workflow (gleicher Job, gleiche Secrets).</p>"
-          ok = send_email(sub, html, [])
-          print("[PING] result:", ok)
-          PY
 
       - name: Upload charts (artifacts)
         if: always()

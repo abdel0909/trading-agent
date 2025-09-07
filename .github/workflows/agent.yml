@@ -53,6 +53,14 @@ jobs:
       #       echo "Weekend (UTC) – skip run."
       #       exit 78
       #     fi
+      
+      - name: Skip on weekend (UTC)
+         run: |
+            DOW=$(date -u +%u)     # 1=Mo … 7=So
+            if [ "$DOW" -ge 6 ]; then
+              echo "Weekend (UTC) – skip run."
+              exit 78
+            fi
 
       - name: Debug mail env (masked)
         run: |

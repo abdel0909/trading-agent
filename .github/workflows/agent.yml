@@ -1,31 +1,31 @@
-name: Market Analysis 15m (Wilder)
+name: Market Analysis 15m
 
 on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Kommagetrennte Symbole (z. B. EURUSD=X,GBPUSD=X)"
+        description: "Kommagetrennte Symbole (z.B. EURUSD=X,GBPUSD=X)"
         required: false
         default: "EURUSD=X"
       tz:
-        description: "Zeitzone (IANA, z. B. Europe/Berlin)"
+        description: "Zeitzone (IANA)"
         required: false
         default: "Europe/Berlin"
   schedule:
-    - cron: "*/15 * * * *"   # alle 15 Minuten
+    - cron: "*/15 * * * *"
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
-    # 🔐 ZENTRAL: Mail-Variablen + PYTHONPATH
     env:
       PYTHONPATH: ${{ github.workspace }}
-      SMTP_USER:  ${{ secrets.SMTP_USER }}
-      SMTP_PASS:  ${{ secrets.SMTP_PASS }}
-      EMAIL_TO:   ${{ secrets.EMAIL_TO }}
-      SMTP_HOST:  ${{ secrets.SMTP_HOST }}
-      SMTP_PORT:  ${{ secrets.SMTP_PORT }}
+
+      # Mail-ENV zentral (damit ALLE Steps gleiche Werte haben)
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
 
     steps:
       - name: Checkout
@@ -34,51 +34,48 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
           cache: "pip"
 
-      - name: Install deps
+      - name: Install deps (robust)
         run: |
           set -e
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # Safety-Nets, falls requirements.txt mal schlanker ist:
-          pip install python-dotenv pyyaml
-
-      # --- Optionaler Guard: am Wochenende skippen (Agent selbst hat Fallback auf Daily) ---
-      # - name: Skip on weekend (UTC)
-      #   run: |
-      #     DOW=$(date -u +%u)   # 1=Mo … 7=So
-      #     if [ "$DOW" -ge 6 ]; then
-      #       echo "Weekend (UTC) – skip run."
-      #       exit 78
-      #     fi
-      
-  
+          python -m pip install --upgrade pip setuptools wheel
+          # 1) Standard-Install
+          pip install -r requirements.txt || true
+          # 2) Harte Fallbacks (falls Index/Build zickt)
+          pip install pandas-ta==0.3.14b0 || pip install "git+https://github.com/twopirllc/pandas-ta@0.3.14b0"
+          pip install mplfinance==0.12.10b0 || pip install "git+https://github.com/matplotlib/mplfinance@v0.12.10b0"
+          # Optional: Sichtprüfung
+          python - <<'PY'
+          import importlib, sys
+          for pkg in ["pandas","numpy","pandas_ta","mplfinance","yfinance"]:
+              try:
+                  m = importlib.import_module(pkg)
+                  print(f"[ok] {pkg} ->", getattr(m, "__version__", "?"))
+              except Exception as e:
+                  print(f"[ERR] {pkg} ->", e); sys.exit(1)
+          PY
 
       - name: Debug mail env (masked)
         run: |
           python - <<'PY'
           import os
-          def mask(v): 
-              return v if not v else (v[:2] + "***" + v[-2:])
-          print("[env] EMAIL_TO  =", mask(os.getenv("EMAIL_TO")))
-          print("[env] SMTP_USER =", mask(os.getenv("SMTP_USER")))
-          print("[env] SMTP_PASS =", "JA" if os.getenv("SMTP_PASS") else "NEIN")
-          print("[env] HOST/PORT =", os.getenv("SMTP_HOST"), os.getenv("SMTP_PORT"))
+          def mask(s): 
+              return s if not s else (s[:2] + "***" + s[-2:])
+          print("[env] EMAIL_TO   =", mask(os.getenv("EMAIL_TO")))
+          print("[env] SMTP_USER  =", mask(os.getenv("SMTP_USER")))
+          print("[env] SMTP_PASS? =", "JA" if os.getenv("SMTP_PASS") else "NEIN")
+          print("[env] HOST/PORT  =", os.getenv("SMTP_HOST"), os.getenv("SMTP_PORT"))
           PY
 
-      - name: Run AGENT (send email)
+      - name: Run agent (send mail)
         run: |
           set -euxo pipefail
-          SYM="${{ github.event.inputs.symbols }}"
-          TZV="${{ github.event.inputs.tz }}"
-          [ -z "$SYM" ] && SYM="EURUSD=X"
-          [ -z "$TZV" ] && TZV="Europe/Berlin"
-
+          SYM="${{ github.event.inputs.symbols || 'EURUSD=X' }}"
+          TZV="${{ github.event.inputs.tz || 'Europe/Berlin' }}"
           echo "[run] symbols=$SYM tz=$TZV"
           python -u agent.py --symbols "$SYM" --tz "$TZV" --email
-          echo "[AGENT_DONE] agent.py finished"
 
       - name: Upload charts (artifacts)
         if: always()

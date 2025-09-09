@@ -1,3 +1,29 @@
+name: Market Analysis 15m (force run)
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Kommagetrennte Symbole (z.B. EURUSD=X,GBPUSD=X)"
+        required: false
+        default: "EURUSD=X"
+      tz:
+        description: "Zeitzone (IANA, z.B. Europe/Berlin)"
+        required: false
+        default: "Europe/Berlin"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
       - name: Install deps (robust)
         run: |
           set -e
@@ -5,28 +31,37 @@
           python -m pip install --upgrade pip
           pip --version
 
-          # 1) Erst normal, ohne Cache (vermeidet kaputte Wheels)
+          # Erst normal installieren
           pip install --no-cache-dir -r requirements.txt || true
 
-          # 2) Falls pandas-ta immer noch fehlt/fehlerhaft → PyPI-Versuch
+          # Falls pandas-ta fehlt → PyPI versuchen
           python - <<'PY'
           import importlib, sys, subprocess
-          def have(mod): 
-              try: importlib.import_module(mod); return True
-              except Exception: return False
-
+          def have(mod):
+              try: importlib.import_module(mod); print(f"[ok] {mod} vorhanden"); return True
+              except: return False
           if not have("pandas_ta"):
-              print("[fix] Trying PyPI: pandas-ta==0.3.14b0 …")
-              subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "pandas-ta==0.3.14b0"])
+              print("[fix] Installing pandas-ta via PyPI…")
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "pandas-ta==0.3.14b0"])
+          PY
 
-          # 3) Falls das auch scheitert → GitHub-Source (tag v0.3.14b)
+          # Falls das auch scheitert → GitHub Source
+          python - <<'PY'
+          import importlib, subprocess, sys
           try:
               importlib.import_module("pandas_ta")
-              print("[ok] pandas_ta import works.")
+              print("[ok] pandas-ta import works.")
           except Exception:
-              print("[fix] Trying GitHub source for pandas_ta (v0.3.14b) …")
-              subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir",
-                                    "git+https://github.com/twopirllc/pandas-ta@v0.3.14b"])
-              importlib.import_module("pandas_ta")
-              print("[ok] pandas_ta import works after GitHub install.")
+              print("[fix] Installing pandas-ta from GitHub source…")
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "git+https://github.com/twopirllc/pandas-ta.git@main"])
           PY
+
+      - name: Run AGENT (send email)
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO:  ${{ secrets.EMAIL_TO }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+        run: |
+          python agent.py --symbols "${{ github.event.inputs.symbols }}" --tz "${{ github.event.inputs.tz }}" --email

@@ -1,86 +1,32 @@
-name: Market Analysis 15m
-
-on:
-  workflow_dispatch:
-    inputs:
-      symbols:
-        description: "Kommagetrennte Symbole (z.B. EURUSD=X,GBPUSD=X)"
-        required: false
-        default: "EURUSD=X"
-      tz:
-        description: "Zeitzone (IANA)"
-        required: false
-        default: "Europe/Berlin"
-  schedule:
-    - cron: "*/15 * * * *"
-
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: ${{ github.workspace }}
-
-      # Mail-ENV zentral (damit ALLE Steps gleiche Werte haben)
-      SMTP_USER: ${{ secrets.SMTP_USER }}
-      SMTP_PASS: ${{ secrets.SMTP_PASS }}
-      EMAIL_TO:  ${{ secrets.EMAIL_TO }}
-      SMTP_HOST: ${{ secrets.SMTP_HOST }}
-      SMTP_PORT: ${{ secrets.SMTP_PORT }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          cache: "pip"
-
       - name: Install deps (robust)
         run: |
           set -e
-          python -m pip install --upgrade pip setuptools wheel
-          # 1) Standard-Install
-          pip install -r requirements.txt || true
-          # 2) Harte Fallbacks (falls Index/Build zickt)
-          pip install pandas-ta==0.3.14b0 || pip install "git+https://github.com/twopirllc/pandas-ta@0.3.14b0"
-          pip install mplfinance==0.12.10b0 || pip install "git+https://github.com/matplotlib/mplfinance@v0.12.10b0"
-          # Optional: Sichtprüfung
+          echo "Python: $(python -V)"
+          python -m pip install --upgrade pip
+          pip --version
+
+          # 1) Erst normal, ohne Cache (vermeidet kaputte Wheels)
+          pip install --no-cache-dir -r requirements.txt || true
+
+          # 2) Falls pandas-ta immer noch fehlt/fehlerhaft → PyPI-Versuch
           python - <<'PY'
-          import importlib, sys
-          for pkg in ["pandas","numpy","pandas_ta","mplfinance","yfinance"]:
-              try:
-                  m = importlib.import_module(pkg)
-                  print(f"[ok] {pkg} ->", getattr(m, "__version__", "?"))
-              except Exception as e:
-                  print(f"[ERR] {pkg} ->", e); sys.exit(1)
+          import importlib, sys, subprocess
+          def have(mod): 
+              try: importlib.import_module(mod); return True
+              except Exception: return False
+
+          if not have("pandas_ta"):
+              print("[fix] Trying PyPI: pandas-ta==0.3.14b0 …")
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "pandas-ta==0.3.14b0"])
+
+          # 3) Falls das auch scheitert → GitHub-Source (tag v0.3.14b)
+          try:
+              importlib.import_module("pandas_ta")
+              print("[ok] pandas_ta import works.")
+          except Exception:
+              print("[fix] Trying GitHub source for pandas_ta (v0.3.14b) …")
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir",
+                                    "git+https://github.com/twopirllc/pandas-ta@v0.3.14b"])
+              importlib.import_module("pandas_ta")
+              print("[ok] pandas_ta import works after GitHub install.")
           PY
-
-      - name: Debug mail env (masked)
-        run: |
-          python - <<'PY'
-          import os
-          def mask(s): 
-              return s if not s else (s[:2] + "***" + s[-2:])
-          print("[env] EMAIL_TO   =", mask(os.getenv("EMAIL_TO")))
-          print("[env] SMTP_USER  =", mask(os.getenv("SMTP_USER")))
-          print("[env] SMTP_PASS? =", "JA" if os.getenv("SMTP_PASS") else "NEIN")
-          print("[env] HOST/PORT  =", os.getenv("SMTP_HOST"), os.getenv("SMTP_PORT"))
-          PY
-
-      - name: Run agent (send mail)
-        run: |
-          set -euxo pipefail
-          SYM="${{ github.event.inputs.symbols || 'EURUSD=X' }}"
-          TZV="${{ github.event.inputs.tz || 'Europe/Berlin' }}"
-          echo "[run] symbols=$SYM tz=$TZV"
-          python -u agent.py --symbols "$SYM" --tz "$TZV" --email
-
-      - name: Upload charts (artifacts)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: charts
-          path: reports/out/*.png
-          if-no-files-found: ignore

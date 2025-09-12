@@ -2,7 +2,6 @@
 numpy==1.26.4
 pandas==2.2.2
 yfinance==0.2.52
-pandas-ta==0.3.14b0
 
 # Charts
 matplotlib==3.9.2
